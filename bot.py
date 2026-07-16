@@ -23,12 +23,11 @@ log = logging.getLogger(__name__)
 
 
 def load_session() -> StringSession:
-    """Загружает сессию из Supabase."""
     try:
         sb  = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
         res = sb.table("session").select("data").eq("id", 1).execute()
         if res.data:
-            log.info("✅ Сессія завантажена з Supabase")
+            log.info("✅ Сесія завантажена з Supabase")
             return StringSession(res.data[0]["data"])
     except Exception as e:
         log.error(f"❌ Помилка завантаження сесії: {e}")
@@ -175,23 +174,17 @@ async def cb_back(call: types.CallbackQuery):
 
 # ─── Админ команды ───────────────────────────────────────────
 
-def admin_only(func):
-    async def wrapper(message: types.Message, *args, **kwargs):
-        if message.from_user.id != config.ADMIN_ID:
-            await message.answer("⛔️ Немає доступу.")
-            return
-        await func(message, *args, **kwargs)
-    return wrapper
-
 @dp.message(Command("test"))
-@admin_only
 async def cmd_test(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
     await alert_all("🧪 Тест", "Балістика на Київ!! Термінова загроза! Всім в укриття!")
     await message.answer("✅ Тестовий алерт надіслано.")
 
 @dp.message(Command("stats"))
-@admin_only
 async def cmd_stats(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
     subs = get_subscribers()
     await message.answer(
         f"📊 *Статистика BalistAlert*\n\n"
@@ -202,8 +195,9 @@ async def cmd_stats(message: types.Message):
     )
 
 @dp.message(Command("subs"))
-@admin_only
 async def cmd_subs(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
     subs = get_subscribers()
     if not subs:
         await message.answer("📭 Підписників немає.")
@@ -214,8 +208,9 @@ async def cmd_subs(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("broadcast"))
-@admin_only
 async def cmd_broadcast(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
     text = message.text.replace("/broadcast", "").strip()
     if not text:
         await message.answer("Використання: `/broadcast текст`", parse_mode="Markdown")
