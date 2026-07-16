@@ -1,5 +1,5 @@
 """
-🚨 BalistAlert Bot з дзвінками (pytgcalls 3.0.0.dev24)
+🚨 BalistAlert Bot з дзвінками (pytgcalls + Telethon)
 """
 
 import asyncio
@@ -14,6 +14,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from pytgcalls import GroupCallFactory
+from pytgcalls.mtproto_client_type import MTProtoClientType
 
 import config
 from subscribers import add_subscriber, remove_subscriber, get_subscribers, log_alert
@@ -38,7 +39,10 @@ def load_session() -> StringSession:
 userbot    = TelegramClient(load_session(), config.API_ID, config.API_HASH)
 bot        = Bot(token=config.BOT_TOKEN)
 dp         = Dispatcher()
-group_call = GroupCallFactory(userbot).get_file_group_call("siren.mp3")
+group_call = GroupCallFactory(
+    userbot,
+    MTProtoClientType.TELETHON
+).get_file_group_call("siren.mp3")
 
 
 # ─── Клавиатуры ─────────────────────────────────────────────
