@@ -12,7 +12,7 @@ from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.phone import RequestCallRequest, DiscardCallRequest
-from telethon.tl.types import PhoneCallProtocol, InputPhoneCall
+from telethon.tl.types import PhoneCallProtocol, InputPhoneCall, InputUser
 from supabase import create_client
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -84,11 +84,8 @@ def build_alert(channel_name: str, original_text: str) -> str:
 async def call_user(user_id: int):
     try:
         log.info(f"📞 Дзвоним {user_id}...")
-        user = await userbot.get_entity(user_id)
-
-        # Генеруємо g_a для протоколу
+        input_user = await userbot.get_input_entity(user_id)
         g_a_hash = hashlib.sha256(os.urandom(256)).digest()
-
         protocol = PhoneCallProtocol(
             min_layer=65,
             max_layer=92,
@@ -96,9 +93,8 @@ async def call_user(user_id: int):
             udp_reflector=True,
             library_versions=["3.0.0"],
         )
-
         result = await userbot(RequestCallRequest(
-            user_id=user,
+            user_id=input_user,
             random_id=int.from_bytes(os.urandom(4), "big") % 2147483647,
             g_a_hash=g_a_hash,
             protocol=protocol,
