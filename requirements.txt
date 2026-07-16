@@ -1,0 +1,5 @@
+telethon
+pytgcalls
+aiogram>=3.0
+supabase
+python-dotenv
