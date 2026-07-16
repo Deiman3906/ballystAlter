@@ -99,7 +99,7 @@ async def call_user(user_id: int):
 
         result = await userbot(RequestCallRequest(
             user_id=user,
-            random_id=int.from_bytes(os.urandom(4), 'big'),
+            random_id=int.from_bytes(os.urandom(4), "big") % 2147483647,
             g_a_hash=g_a_hash,
             protocol=protocol,
         ))
