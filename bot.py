@@ -1,5 +1,5 @@
 """
-🚨 BalistAlert Bot з дзвінками
+🚨 BalistAlert Bot з дзвінками (pytgcalls 3.0.0.dev24)
 """
 
 import asyncio
@@ -13,8 +13,7 @@ from supabase import create_client
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
+from pytgcalls import GroupCallFactory
 
 import config
 from subscribers import add_subscriber, remove_subscriber, get_subscribers, log_alert
@@ -36,10 +35,10 @@ def load_session() -> StringSession:
     return StringSession()
 
 
-userbot   = TelegramClient(load_session(), config.API_ID, config.API_HASH)
-bot       = Bot(token=config.BOT_TOKEN)
-dp        = Dispatcher()
-calls     = PyTgCalls(userbot)
+userbot    = TelegramClient(load_session(), config.API_ID, config.API_HASH)
+bot        = Bot(token=config.BOT_TOKEN)
+dp         = Dispatcher()
+group_call = GroupCallFactory(userbot).get_file_group_call("siren.mp3")
 
 
 # ─── Клавиатуры ─────────────────────────────────────────────
@@ -83,12 +82,9 @@ def build_alert(channel_name: str, original_text: str) -> str:
 async def call_user(user_id: int):
     try:
         log.info(f"📞 Дзвоним {user_id}...")
-        await calls.call_user(
-            user_id,
-            AudioPiped("siren.mp3")
-        )
+        await group_call.start(user_id)
         await asyncio.sleep(30)
-        await calls.leave_call(user_id)
+        await group_call.stop()
         log.info(f"✅ Дзвінок завершено → {user_id}")
     except Exception as e:
         log.error(f"❌ Помилка дзвінка {user_id}: {e}")
@@ -112,8 +108,9 @@ async def alert_all(channel_name: str, text: str):
 
     await asyncio.sleep(config.CALL_DELAY)
 
-    tasks = [call_user(uid) for uid in subscribers]
-    await asyncio.gather(*tasks)
+    for uid in subscribers:
+        await call_user(uid)
+        await asyncio.sleep(2)
 
 
 # ─── Мониторинг каналов ─────────────────────────────────────
@@ -183,11 +180,9 @@ async def cb_about(call: types.CallbackQuery):
     await call.message.answer(
         "🛡 *BalistAlert*\n\n"
         "Цей бот створений для твоєї безпеки\\.\n\n"
-        "⚡️ Я слідкую за ситуацією в небі 24 години на добу, "
-        "7 днів на тиждень — навіть поки ти спиш\\.\n\n"
-        "🚨 При виявленні балістичної загрози ти миттєво "
-        "отримаєш повідомлення і дзвінок в Telegram\\.\n\n"
-        "🤖 Для аналізу використовую штучний інтелект\\.\n\n"
+        "⚡️ Я слідкую за ситуацією в небі 24 години на добу\\.\n\n"
+        "🚨 При загрозі отримаєш повідомлення і дзвінок в Telegram\\.\n\n"
+        "🤖 Аналіз через штучний інтелект\\.\n\n"
         "_Підпишись і будь в безпеці\\._",
         parse_mode="MarkdownV2",
         reply_markup=kb_back()
@@ -213,7 +208,7 @@ async def cmd_stats(message: types.Message):
         return
     subs = get_subscribers()
     await message.answer(
-        f"📊 *Статистика BalistAlert*\n\n"
+        f"📊 *Статистика*\n\n"
         f"👥 Підписників: *{len(subs)}*\n"
         f"🤖 Groq ключів: *{len(config.GROQ_KEYS)}*\n"
         f"📡 Каналів: *{len(config.WATCH_CHANNELS)}*",
@@ -252,26 +247,6 @@ async def cmd_broadcast(message: types.Message):
     await message.answer(f"✅ Надіслано {count}/{len(subs)} підписникам.")
 
 
-# ─── Keep alive ──────────────────────────────────────────────
-
-async def keep_alive():
-    from aiohttp import web, ClientSession
-
-    async def health(request):
-        return web.Response(text="BalistAlert is running 🚨")
-
-    app = web.Application()
-    app.router.add_get("/", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", 8080).start()
-    log.info("🌐 Веб-сервер на порту 8080")
-
-    while True:
-        await asyncio.sleep(600)
-        log.info("📡 Ping OK")
-
-
 # ─── Запуск ─────────────────────────────────────────────────
 
 async def main():
@@ -280,13 +255,10 @@ async def main():
     me = await userbot.get_me()
     log.info(f"👤 Userbot: {me.first_name} (@{me.username})")
     log.info(f"🤖 Groq ключів: {len(config.GROQ_KEYS)}")
-    await calls.start()
-    log.info("📞 pytgcalls готовий")
     log.info("✅ Бот запущений!")
     await asyncio.gather(
         dp.start_polling(bot),
         userbot.run_until_disconnected(),
-        keep_alive(),
     )
 
 if __name__ == "__main__":
