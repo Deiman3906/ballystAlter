@@ -94,6 +94,7 @@ async def call_user(user_id: int):
             max_layer=92,
             udp_p2p=True,
             udp_reflector=True,
+            library_versions=["3.0.0"],
         )
 
         result = await userbot(RequestCallRequest(
