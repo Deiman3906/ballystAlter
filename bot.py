@@ -5,10 +5,11 @@
 import asyncio
 import logging
 import os
-import base64
 from datetime import datetime
 
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
+from supabase import create_client
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -20,14 +21,21 @@ from groq_classifier import is_threat_groq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# Восстановление сессии из переменной окружения (для Render)
-SESSION_STRING = os.getenv("SESSION_STRING", "")
-if SESSION_STRING:
-    with open(f"{config.SESSION_NAME}.session", "wb") as f:
-        f.write(base64.b64decode(SESSION_STRING))
-    log.info("✅ Сессия восстановлена из SESSION_STRING")
 
-userbot = TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)
+def load_session() -> StringSession:
+    """Загружает сессию из Supabase."""
+    try:
+        sb  = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        res = sb.table("session").select("data").eq("id", 1).execute()
+        if res.data:
+            log.info("✅ Сессія завантажена з Supabase")
+            return StringSession(res.data[0]["data"])
+    except Exception as e:
+        log.error(f"❌ Помилка завантаження сесії: {e}")
+    return StringSession()
+
+
+userbot = TelegramClient(load_session(), config.API_ID, config.API_HASH)
 bot     = Bot(token=config.BOT_TOKEN)
 dp      = Dispatcher()
 
@@ -89,15 +97,12 @@ async def on_channel_message(event):
     text = event.raw_text
     if not text:
         return
-
-    # Groq классификация (с фолбэком на ключевые слова)
     is_threat = await is_threat_groq(text)
     if not is_threat:
         return
-
     chat         = await event.get_chat()
     channel_name = getattr(chat, "title", str(chat.id))
-    log.warning(f"🚨 ЗАГРОЗА [{channel_name}]: {text[:80]}...")
+    log.warning(f"🚨 [{channel_name}]: {text[:80]}...")
     await alert_all(channel_name, text)
 
 
@@ -147,75 +152,6 @@ async def cb_unsubscribe(call: types.CallbackQuery):
         parse_mode="MarkdownV2"
     )
 
-@dp.callback_query(F.data == "status")
-async def cb_status(call: types.CallbackQuery):
-    count = len(get_subscribers())
-    await call.answer(f"👥 Активних підписників: {count}", show_alert=True)
-
-
-# ─── Админ команды ───────────────────────────────────────────
-
-def admin_only(func):
-    """Декоратор — только для админа."""
-    async def wrapper(message: types.Message, *args, **kwargs):
-        if message.from_user.id != config.ADMIN_ID:
-            await message.answer("⛔️ Немає доступу.")
-            return
-        await func(message, *args, **kwargs)
-    return wrapper
-
-
-@dp.message(Command("stats"))
-@admin_only
-async def cmd_stats(message: types.Message):
-    subs = get_subscribers()
-    await message.answer(
-        f"📊 *Статистика BalistAlert*\n\n"
-        f"👥 Підписників: *{len(subs)}*\n"
-        f"🤖 Groq ключів: *{len(config.GROQ_KEYS)}*\n"
-        f"📡 Каналів: *{len(config.WATCH_CHANNELS)}*",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("subs"))
-@admin_only
-async def cmd_subs(message: types.Message):
-    subs = get_subscribers()
-    if not subs:
-        await message.answer("📭 Підписників немає.")
-        return
-    text = "👥 *Список підписників:*\n\n"
-    for i, uid in enumerate(subs, 1):
-        text += f"{i}. `{uid}`\n"
-    await message.answer(text, parse_mode="Markdown")
-
-
-@dp.message(Command("test"))
-@admin_only
-async def cmd_test(message: types.Message):
-    await alert_all("🧪 Тест", "Балістика на Київ!! Термінова загроза! Всім в укриття!")
-    await message.answer("✅ Тестовий алерт надіслано всім підписникам.")
-
-
-@dp.message(Command("broadcast"))
-@admin_only
-async def cmd_broadcast(message: types.Message):
-    """Ручна розсилка: /broadcast текст повідомлення"""
-    text = message.text.replace("/broadcast", "").strip()
-    if not text:
-        await message.answer("Використання: `/broadcast текст повідомлення`", parse_mode="Markdown")
-        return
-    subs  = get_subscribers()
-    count = 0
-    for uid in subs:
-        try:
-            await bot.send_message(uid, text)
-            count += 1
-        except Exception as e:
-            log.error(f"Broadcast error {uid}: {e}")
-    await message.answer(f"✅ Надіслано {count}/{len(subs)} підписникам.")
-
 @dp.callback_query(F.data == "about")
 async def cb_about(call: types.CallbackQuery):
     await call.message.answer(
@@ -237,6 +173,90 @@ async def cb_back(call: types.CallbackQuery):
     await call.message.delete()
 
 
+# ─── Админ команды ───────────────────────────────────────────
+
+def admin_only(func):
+    async def wrapper(message: types.Message, *args, **kwargs):
+        if message.from_user.id != config.ADMIN_ID:
+            await message.answer("⛔️ Немає доступу.")
+            return
+        await func(message, *args, **kwargs)
+    return wrapper
+
+@dp.message(Command("test"))
+@admin_only
+async def cmd_test(message: types.Message):
+    await alert_all("🧪 Тест", "Балістика на Київ!! Термінова загроза! Всім в укриття!")
+    await message.answer("✅ Тестовий алерт надіслано.")
+
+@dp.message(Command("stats"))
+@admin_only
+async def cmd_stats(message: types.Message):
+    subs = get_subscribers()
+    await message.answer(
+        f"📊 *Статистика BalistAlert*\n\n"
+        f"👥 Підписників: *{len(subs)}*\n"
+        f"🤖 Groq ключів: *{len(config.GROQ_KEYS)}*\n"
+        f"📡 Каналів: *{len(config.WATCH_CHANNELS)}*",
+        parse_mode="Markdown"
+    )
+
+@dp.message(Command("subs"))
+@admin_only
+async def cmd_subs(message: types.Message):
+    subs = get_subscribers()
+    if not subs:
+        await message.answer("📭 Підписників немає.")
+        return
+    text = "👥 *Список підписників:*\n\n"
+    for i, uid in enumerate(subs, 1):
+        text += f"{i}. `{uid}`\n"
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("broadcast"))
+@admin_only
+async def cmd_broadcast(message: types.Message):
+    text = message.text.replace("/broadcast", "").strip()
+    if not text:
+        await message.answer("Використання: `/broadcast текст`", parse_mode="Markdown")
+        return
+    subs  = get_subscribers()
+    count = 0
+    for uid in subs:
+        try:
+            await bot.send_message(uid, text)
+            count += 1
+        except Exception as e:
+            log.error(f"Broadcast {uid}: {e}")
+    await message.answer(f"✅ Надіслано {count}/{len(subs)} підписникам.")
+
+
+# ─── Keep alive ──────────────────────────────────────────────
+
+async def keep_alive():
+    from aiohttp import web, ClientSession
+
+    async def health(request):
+        return web.Response(text="BalistAlert is running 🚨")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", 8080).start()
+    log.info("🌐 Веб-сервер на порту 8080")
+
+    url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8080")
+    while True:
+        await asyncio.sleep(600)
+        try:
+            async with ClientSession() as session:
+                await session.get(url)
+            log.info("📡 Self-ping OK")
+        except Exception as e:
+            log.warning(f"Ping failed: {e}")
+
+
 # ─── Запуск ─────────────────────────────────────────────────
 
 async def main():
@@ -249,6 +269,7 @@ async def main():
     await asyncio.gather(
         dp.start_polling(bot),
         userbot.run_until_disconnected(),
+        keep_alive(),
     )
 
 if __name__ == "__main__":
