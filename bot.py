@@ -1,20 +1,22 @@
 """
-🚨 BalistAlert Bot з дзвінками (pytgcalls + Telethon)
+🚨 BalistAlert Bot з дзвінками через Telethon MTProto
 """
 
 import asyncio
 import logging
 import os
+import struct
+import hashlib
 from datetime import datetime
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.functions.phone import RequestCallRequest, DiscardCallRequest
+from telethon.tl.types import PhoneCallProtocol, InputPhoneCall
 from supabase import create_client
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from pytgcalls import GroupCallFactory
-from pytgcalls.mtproto_client_type import MTProtoClientType
 
 import config
 from subscribers import add_subscriber, remove_subscriber, get_subscribers, log_alert
@@ -36,13 +38,9 @@ def load_session() -> StringSession:
     return StringSession()
 
 
-userbot    = TelegramClient(load_session(), config.API_ID, config.API_HASH)
-bot        = Bot(token=config.BOT_TOKEN)
-dp         = Dispatcher()
-group_call = GroupCallFactory(
-    userbot,
-    MTProtoClientType.TELETHON
-).get_file_group_call("siren.mp3")
+userbot = TelegramClient(load_session(), config.API_ID, config.API_HASH)
+bot     = Bot(token=config.BOT_TOKEN)
+dp      = Dispatcher()
 
 
 # ─── Клавиатуры ─────────────────────────────────────────────
@@ -81,15 +79,51 @@ def build_alert(channel_name: str, original_text: str) -> str:
     )
 
 
-# ─── Звонок ─────────────────────────────────────────────────
+# ─── Звонок через Telethon MTProto ──────────────────────────
 
 async def call_user(user_id: int):
     try:
         log.info(f"📞 Дзвоним {user_id}...")
-        await group_call.start(user_id)
-        await asyncio.sleep(30)
-        await group_call.stop()
+        user = await userbot.get_entity(user_id)
+
+        # Генеруємо g_a для протоколу
+        g_a_hash = hashlib.sha256(os.urandom(256)).digest()
+
+        protocol = PhoneCallProtocol(
+            min_layer=65,
+            max_layer=92,
+            udp_p2p=True,
+            udp_reflector=True,
+        )
+
+        result = await userbot(RequestCallRequest(
+            user_id=user,
+            random_id=int.from_bytes(os.urandom(4), 'big'),
+            g_a_hash=g_a_hash,
+            protocol=protocol,
+        ))
+
+        log.info(f"✅ Дзвінок ініційовано → {user_id}, id={result.phone_call.id}")
+
+        # Тримаємо дзвінок 20 секунд
+        await asyncio.sleep(20)
+
+        # Завершуємо дзвінок
+        try:
+            await userbot(DiscardCallRequest(
+                peer=InputPhoneCall(
+                    id=result.phone_call.id,
+                    access_hash=result.phone_call.access_hash,
+                ),
+                duration=20,
+                reason=None,
+                connection_id=0,
+            ))
+        except Exception:
+            pass
+
         log.info(f"✅ Дзвінок завершено → {user_id}")
+
     except Exception as e:
         log.error(f"❌ Помилка дзвінка {user_id}: {e}")
 
@@ -205,6 +239,13 @@ async def cmd_test(message: types.Message):
         return
     await alert_all("🧪 Тест", "Балістика на Київ!! Термінова загроза! Всім в укриття!")
     await message.answer("✅ Тестовий алерт надіслано.")
+
+@dp.message(Command("calltest"))
+async def cmd_calltest(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    await message.answer("📞 Дзвоню тобі...")
+    await call_user(message.from_user.id)
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
