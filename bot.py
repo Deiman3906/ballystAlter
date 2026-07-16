@@ -4,6 +4,8 @@
 
 import asyncio
 import logging
+import os
+import base64
 from datetime import datetime
 
 from telethon import TelegramClient, events
@@ -17,6 +19,13 @@ from groq_classifier import is_threat_groq
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# Восстановление сессии из переменной окружения (для Render)
+SESSION_STRING = os.getenv("SESSION_STRING", "")
+if SESSION_STRING:
+    with open(f"{config.SESSION_NAME}.session", "wb") as f:
+        f.write(base64.b64decode(SESSION_STRING))
+    log.info("✅ Сессия восстановлена из SESSION_STRING")
 
 userbot = TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)
 bot     = Bot(token=config.BOT_TOKEN)
