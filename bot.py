@@ -8,6 +8,7 @@ import os
 import struct
 import hashlib
 from datetime import datetime
+from subscribers import add_subscriber, remove_subscriber, get_subscribers, get_subscribers_full, log_alert
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -81,10 +82,37 @@ def build_alert(channel_name: str, original_text: str) -> str:
 
 # ─── Звонок через Telethon MTProto ──────────────────────────
 
-async def call_user(user_id: int):
+async def call_user(user_id: int, access_hash: int = None, username: str = None):
     try:
         log.info(f"📞 Дзвоним {user_id}...")
-        input_user = await userbot.get_input_entity(user_id)
+        
+        from telethon.tl.types import InputUser
+        input_user = None
+
+        # 1. Пробуем по access_hash
+        if access_hash:
+            input_user = InputUser(user_id=user_id, access_hash=access_hash)
+            log.info(f"✅ Використовуємо access_hash для {user_id}")
+
+        # 2. Пробуем по username
+        if input_user is None and username:
+            try:
+                entity = await userbot.get_entity(f"@{username}")
+                input_user = InputUser(user_id=entity.id, access_hash=entity.access_hash)
+                log.info(f"✅ Знайшли по @{username}")
+            except Exception as e:
+                log.warning(f"Не знайшли по username @{username}: {e}")
+
+        # 3. Пробуем напрямую по user_id
+        if input_user is None:
+            try:
+                entity = await userbot.get_entity(user_id)
+                input_user = InputUser(user_id=entity.id, access_hash=entity.access_hash)
+                log.info(f"✅ Знайшли по user_id {user_id}")
+            except Exception as e:
+                log.error(f"❌ Не вдалось знайти юзера {user_id}: {e}")
+                return
+
         g_a_hash = hashlib.sha256(os.urandom(256)).digest()
         protocol = PhoneCallProtocol(
             min_layer=65,
@@ -100,12 +128,9 @@ async def call_user(user_id: int):
             protocol=protocol,
         ))
 
-        log.info(f"✅ Дзвінок ініційовано → {user_id}, id={result.phone_call.id}")
-
-        # Тримаємо дзвінок 20 секунд
+        log.info(f"✅ Дзвінок ініційовано → {user_id}")
         await asyncio.sleep(20)
 
-        # Завершуємо дзвінок
         try:
             await userbot(DiscardCallRequest(
                 peer=InputPhoneCall(
@@ -128,24 +153,29 @@ async def call_user(user_id: int):
 # ─── Оповещение всех ────────────────────────────────────────
 
 async def alert_all(channel_name: str, text: str):
-    subscribers = get_subscribers()
+    subscribers = get_subscribers_full()
     if not subscribers:
         log.warning("Немає підписників!")
         return
     log_alert(channel_name, text, len(subscribers))
     message = build_alert(channel_name, text)
-    for user_id in subscribers:
+    
+    for row in subscribers:
         try:
-            await bot.send_message(user_id, message, parse_mode="Markdown")
-            log.info(f"✅ Повідомлення → {user_id}")
+            await bot.send_message(row["user_id"], message, parse_mode="Markdown")
+            log.info(f"✅ Повідомлення → {row['user_id']}")
         except Exception as e:
-            log.error(f"❌ {user_id}: {e}")
+            log.error(f"❌ {row['user_id']}: {e}")
 
     await asyncio.sleep(config.CALL_DELAY)
 
-    for uid in subscribers:
-        await call_user(uid)
-        await asyncio.sleep(2)
+    # Звоним всем одновременно!
+    call_tasks = [
+        call_user(row["user_id"], row.get("access_hash"), row.get("username"))
+        for row in subscribers
+        if row["user_id"] != config.ADMIN_ID
+    ]
+    await asyncio.gather(*call_tasks)
 
 
 # ─── Мониторинг каналов ─────────────────────────────────────
@@ -174,6 +204,8 @@ async def cmd_start(message: types.Message):
         f"👋 Привіт, *{user.first_name}*\\!\n\n"
         "Я *BalistAlert* — бот раннього оповіщення про балістичні загрози\\.\n\n"
         "🛡 Моніторю канали 24/7 та одразу сповіщу тебе при загрозі\\.\n\n"
+        "📞 При загрозі надішлю повідомлення та *зателефоную* тобі\\!\n\n"
+        "⚠️ Для дзвінків у *Telegram*: *Налаштування → Конфіденційність → Дзвінки → Всі*\n\n"
         "Натисни кнопку нижче щоб підписатись 👇"
     )
     try:
@@ -189,12 +221,31 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data == "subscribe")
 async def cb_subscribe(call: types.CallbackQuery):
     user = call.from_user
-    add_subscriber(user.id, user.username or "", user.first_name or "")
+    
+    access_hash = None
+    try:
+        await userbot.send_message(user.id, 
+            "👋 Привіт! Я буду дзвонити тобі при балістичній загрозі. "
+            "Не блокуй мене щоб дзвінки працювали! 🚨")
+        log.info(f"✅ Userbot написав {user.id}")
+        await asyncio.sleep(1)
+        entity = await userbot.get_entity(user.id)
+        access_hash = entity.access_hash
+        log.info(f"✅ access_hash для {user.id}: {access_hash}")
+    except Exception as e:
+        log.warning(f"Не вдалось отримати access_hash: {e}")
+    
+    add_subscriber(user.id, user.username or "", user.first_name or "", access_hash)
+    
     await call.message.edit_reply_markup(reply_markup=kb_main(is_subscribed=True))
     await call.answer("✅ Підписано!", show_alert=False)
     await call.message.answer(
         "✅ *Підписку оформлено\\!*\n\n"
         "При балістичній загрозі я одразу надішлю повідомлення і *зателефоную* тобі 🚨\n\n"
+        "⚠️ *Важливо для дзвінків\\!*\n"
+        "Щоб отримувати дзвінки\\-оповіщення:\n\n"
+        "📱 *Налаштування → Конфіденційність → Дзвінки → Всі*\n\n"
+        "_Без цього дзвінок може не пройти\\!_\n\n"
         "_Не вимикай сповіщення від бота\\!_",
         parse_mode="MarkdownV2"
     )
@@ -228,6 +279,7 @@ async def cb_back(call: types.CallbackQuery):
     await call.message.delete()
 
 
+
 # ─── Админ команды ───────────────────────────────────────────
 
 @dp.message(Command("test"))
@@ -242,7 +294,10 @@ async def cmd_calltest(message: types.Message):
     if message.from_user.id != config.ADMIN_ID:
         return
     await message.answer("📞 Дзвоню тобі...")
-    await call_user(message.from_user.id)
+    await call_user(
+        message.from_user.id,
+        username=message.from_user.username
+    )
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
