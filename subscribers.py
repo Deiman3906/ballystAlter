@@ -7,13 +7,16 @@ load_dotenv()
 sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 
-def add_subscriber(user_id: int, username: str = "", first_name: str = ""):
-    sb.table("subscribers").upsert({
+def add_subscriber(user_id: int, username: str = "", first_name: str = "", access_hash: int = None):
+    data = {
         "user_id":    user_id,
         "username":   username,
         "first_name": first_name,
         "active":     True,
-    }).execute()
+    }
+    if access_hash is not None:
+        data["access_hash"] = access_hash
+    sb.table("subscribers").upsert(data, on_conflict="user_id").execute()
 
 
 def remove_subscriber(user_id: int):
@@ -29,8 +32,15 @@ def get_subscribers() -> list[int]:
     return [row["user_id"] for row in res.data]
 
 
+def get_subscribers_full() -> list[dict]:
+    res = sb.table("subscribers") \
+            .select("user_id, access_hash, username") \
+            .eq("active", True) \
+            .execute()
+    return res.data
+
+
 def log_alert(source: str, message_text: str, notified: int) -> int:
-    """Сохраняет алерт и возвращает его ID."""
     res = sb.table("alerts").insert({
         "source":       source,
         "message_text": message_text,
@@ -45,3 +55,4 @@ def log_call(alert_id: int, user_id: int, status: str = "success"):
         "user_id":  user_id,
         "status":   status,
     }).execute()
+
