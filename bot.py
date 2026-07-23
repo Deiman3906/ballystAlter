@@ -21,10 +21,16 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 
 import config
 from subscribers import add_subscriber, remove_subscriber, get_subscribers, log_alert
-from groq_classifier import is_threat_groq
+from groq_classifier import classify
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# ─── Состояние тревоги ───────────────────────────────────────
+# True  = тревога активна, звонки уже были — игнорируем новые THREAT
+# False = спокойно, реагируем на первый THREAT
+_alert_active = False
+_alert_lock   = asyncio.Lock()
 
 
 def load_session() -> StringSession:
@@ -182,16 +188,50 @@ async def alert_all(channel_name: str, text: str):
 
 @userbot.on(events.NewMessage(chats=config.WATCH_CHANNELS))
 async def on_channel_message(event):
+    global _alert_active
+
     text = event.raw_text
     if not text:
         return
-    is_threat = await is_threat_groq(text)
-    if not is_threat:
-        return
+
     chat         = await event.get_chat()
     channel_name = getattr(chat, "title", str(chat.id))
-    log.warning(f"🚨 [{channel_name}]: {text[:80]}...")
-    await alert_all(channel_name, text)
+
+    status = await classify(text)
+
+    if status == "THREAT":
+        async with _alert_lock:
+            if _alert_active:
+                log.info(f"⚠️ [{channel_name}] THREAT но тревога уже активна — пропускаем")
+                return
+            _alert_active = True  # фиксируем ДО рассылки
+
+        log.warning(f"🚨 [{channel_name}]: {text[:80]}...")
+        await alert_all(channel_name, text)
+
+    elif status == "ALL_CLEAR":
+        async with _alert_lock:
+            if not _alert_active:
+                log.info(f"✅ [{channel_name}] ALL_CLEAR но тревога уже снята — пропускаем")
+                return
+            _alert_active = False
+
+        log.info(f"✅ [{channel_name}] ВІДБІЙ — тривога знята")
+        # Уведомляем подписчиков об отбое
+        subs = get_subscribers_full()
+        for row in subs:
+            try:
+                await bot.send_message(
+                    row["user_id"],
+                    "✅ *ВІДБІЙ* — балістична загроза минула\\.\n\n_Можна виходити з укриття\\._",
+                    parse_mode="MarkdownV2"
+                )
+            except Exception as e:
+                log.error(f"Відбій → {row['user_id']}: {e}")
+
+    else:
+        # SAFE — игнорируем
+        pass
 
 
 # ─── /start ─────────────────────────────────────────────────
@@ -324,6 +364,21 @@ async def cmd_subs(message: types.Message):
     for i, uid in enumerate(subs, 1):
         text += f"{i}. `{uid}`\n"
     await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("alertstatus"))
+async def cmd_alertstatus(message: types.Message):
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    status = "🚨 АКТИВНА" if _alert_active else "✅ Спокійно"
+    await message.answer(f"📊 Статус тривоги: *{status}*", parse_mode="Markdown")
+
+@dp.message(Command("resetalert"))
+async def cmd_resetalert(message: types.Message):
+    global _alert_active
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    _alert_active = False
+    await message.answer("✅ Тривогу знято вручну.")
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: types.Message):
